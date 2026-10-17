@@ -1,0 +1,60 @@
+name: Answer quiz rounds
+
+on:
+  schedule:
+    # Every 10 minutes, offset from the top of the hour when Actions is busiest.
+    - cron: "4,14,24,34,44,54 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: answer
+  cancel-in-progress: false
+
+jobs:
+  answer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Claude SDK (only used for unrecognised questions)
+        if: ${{ env.ANTHROPIC_API_KEY != '' }}
+        run: pip install --quiet anthropic
+
+      - name: Solve
+        id: solve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python run.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "quiz-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add answers
+          if git diff --cached --quiet; then
+            echo "Nothing new to push."
+            exit 0
+          fi
+          git commit -m "Answer rounds $(git diff --cached --name-only | sed -E 's/.*round-0*([0-9]+).json/\1/' | paste -sd, -)"
+          for i in 1 2 3 4 5; do
+            git push && exit 0
+            sleep $((i * 5))
+            git pull --rebase
+          done
+          exit 1
+
+      - name: Fail loudly if any question was guessed
+        if: steps.solve.outputs.flagged == 'true'
+        run: |
+          echo "::error::Some questions were not recognised and were guessed. See the job summary."
+          exit 1
