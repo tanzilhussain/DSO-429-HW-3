@@ -1,0 +1,52 @@
+name: Keep answering
+
+# GitHub's cron only fired answer.yml every 2-7 hours, so rounds missed the
+# 3-hour window. This job stays alive for ~5h45m, dispatching answer.yml a couple
+# of minutes after each round drops (and every 10 minutes in between), then
+# dispatches itself so the chain never depends on the scheduler.
+# The hourly cron only restarts the chain if it ever breaks; the concurrency
+# group keeps it to one running watcher.
+
+on:
+  schedule:
+    - cron: "33 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+env:
+  # Last round (168) closes ~23:00 UTC Thu Oct 22; stop after that.
+  STOP_AT: "2026-10-23T00:00:00Z"
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Dispatch answer.yml every 10 minutes
+        run: |
+          stop=$(date -ud "$STOP_AT" +%s)
+          end=$(( $(date +%s) + 345 * 60 ))
+          while [ "$(date +%s)" -lt "$end" ] && [ "$(date +%s)" -lt "$stop" ]; do
+            gh workflow run answer.yml || echo "::warning::dispatch failed, retrying next tick"
+            # Sleep to the next minute ending in 3 (rounds release at ~:01:40).
+            now=$(date +%s)
+            sleep $(( 600 - (now - 180) % 600 ))
+          done
+
+      - name: Hand off to the next watcher
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "$(date +%s)" -lt "$(date -ud "$STOP_AT" +%s)" ]; then
+            gh workflow run watch.yml
+          else
+            echo "Past STOP_AT; chain ends here."
+          fi
